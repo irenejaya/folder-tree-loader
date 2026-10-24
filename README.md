@@ -5,10 +5,10 @@ A QGIS plugin that loads selected vector and raster datasets from a folder and r
 ## Install
 
 1. In QGIS, open **Plugins > Manage and Install Plugins > Install from ZIP**.
-2. Select `dist/folder_tree_loader-1.0.zip` from this repository and click **Install Plugin**.
+2. Select the Folder Tree Loader plugin ZIP and click **Install Plugin**.
 3. Open **Folder Tree Loader** from its toolbar button or the Plugins menu.
 
-To rebuild the ZIP, run `python build_plugin.py` from this directory. The ZIP contains a single `folder_tree_loader` package directory, suitable for QGIS installation. No pip dependencies are required; the plugin uses QGIS's bundled PyQt and GDAL.
+For ZIP distribution, package the seven plugin files listed below inside a single `folder_tree_loader` directory, then zip that directory. No pip dependencies are required; the plugin uses QGIS's bundled PyQt and GDAL.
 
 For manual installation, copy `__init__.py`, `plugin.py`, `folder_tree_loader_dialog.py`, `metadata.txt`, `icon.svg`, `LICENSE` and `README.md` into a `folder_tree_loader` directory under the active QGIS profile's `python/plugins` directory, then enable it in Plugin Manager.
 
@@ -33,7 +33,7 @@ For ordinary multi-layer vector files, the current scanner loads the default lay
 
 Targets QGIS 3.34 through 4.x, using `qgis.PyQt` and scoped enums for Qt5/Qt6 compatibility.
 
-Validated with the packaged ZIP in QGIS 4.2.3 / Qt 6.11 and QGIS 3.44.15 / Qt 5.15. Tests cover menu/toolbar lifecycle, fresh dialog launches, column sizing and inline filter placement at three dialog widths, layer/folder searches, filtered bulk checks, mixed and folder selection toggles, rescanning, horizontal options, vector/raster/File Geodatabase loading, group creation and flat loading. To repeat these checks, run `python-qgis tests/smoke_test.py` (or the corresponding Qt5 launcher) from an OSGeo4W shell. The test renders light/dark previews into `dist/previews`.
+Validated with the packaged ZIP in QGIS 4.2.3 / Qt 6.11 and QGIS 3.44.15 / Qt 5.15, including scanning, filtering, selection controls and vector/raster/File Geodatabase loading.
 
 ## License
 
