@@ -5,7 +5,7 @@ A QGIS plugin that loads selected vector and raster datasets from a folder and r
 ## Install
 
 1. In QGIS, open **Plugins > Manage and Install Plugins > Install from ZIP**.
-2. Select `dist/folder_tree_loader-1.1.0.zip` from this repository and click **Install Plugin**.
+2. Select `dist/folder_tree_loader-1.0.zip` from this repository and click **Install Plugin**.
 3. Open **Folder Tree Loader** from its toolbar button or the Plugins menu.
 
 To rebuild the ZIP, run `python build_plugin.py` from this directory. The ZIP contains a single `folder_tree_loader` package directory, suitable for QGIS installation. No pip dependencies are required; the plugin uses QGIS's bundled PyQt and GDAL.
@@ -16,7 +16,7 @@ For manual installation, copy `__init__.py`, `plugin.py`, `folder_tree_loader_di
 
 1. Browse to a folder, or paste its path and click **Scan**.
 2. Choose whether to scan **Vector layers**, **Raster layers**, and **Read metadata**. Changing these options rescans the selected folder.
-3. Use the filter beside **Read metadata** to search layer or folder names (case-insensitive). Matching folders show their contents, and matching layers reveal their parent folders. Clearing the filter restores all rows. Filtering preserves checks: checked layers hidden by a search will still load.
+3. Use the filter beside **Read metadata** to search layer or folder names (case-insensitive). It uses the same native QGIS search field with a leading search icon as Geodatabase Loader. Matching folders show their contents, and matching layers reveal their parent folders. Clearing the filter restores all rows. Filtering preserves checks: checked layers hidden by a search will still load.
 4. Check the datasets to load. **Check All** and **Uncheck All** affect only layers shown by the filter. Ctrl/Shift-click to highlight rows and use **Toggle Selection** beside **Uncheck All**: it checks the highlighted layers, or unchecks them when all are already checked. A highlighted folder includes its shown descendants. Changing a highlighted layer's checkbox also applies that state to the highlighted layers.
 5. Choose **Create folder groups** and **Expand groups after loading**, displayed side by side. Expansion is disabled when folder groups are turned off.
 6. Click **Load**. Results and failures appear in the **Log** tab.

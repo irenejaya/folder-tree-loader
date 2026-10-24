@@ -46,6 +46,7 @@ from qgis.core import (
     QgsApplication, QgsProject, QgsVectorLayer, QgsRasterLayer,
     QgsMessageLog, Qgis, QgsLayerTreeGroup,
 )
+from qgis.gui import QgsFilterLineEdit
 
 
 LOG_TAG = "Folder Tree Loader"
@@ -714,9 +715,9 @@ class FolderTreeLoaderDialog(QDialog):
         )
         scan_opts_row.addWidget(self.probe_check)
 
-        self.filter_edit = QLineEdit()
-        self.filter_edit.setClearButtonEnabled(True)
-        self.filter_edit.setPlaceholderText("Filter layers or folders…")
+        self.filter_edit = QgsFilterLineEdit()
+        self.filter_edit.setShowSearchIcon(True)
+        self.filter_edit.setPlaceholderText("Search layer or folder name…")
         self.filter_edit.setAccessibleName("Filter layers or folders")
         self.filter_edit.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.filter_edit.setMinimumWidth(120)
