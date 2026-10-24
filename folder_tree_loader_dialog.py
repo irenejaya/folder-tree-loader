@@ -713,7 +713,19 @@ class FolderTreeLoaderDialog(QDialog):
             "faster scanning on folders with many files."
         )
         scan_opts_row.addWidget(self.probe_check)
-        scan_opts_row.addStretch()
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.setPlaceholderText("Filter layers or folders…")
+        self.filter_edit.setAccessibleName("Filter layers or folders")
+        self.filter_edit.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.filter_edit.setMinimumWidth(120)
+        self.filter_edit.setToolTip(
+            "Filter layer or folder names (case-insensitive).\n"
+            "Checked layers hidden by the filter will still load."
+        )
+        self.filter_edit.setEnabled(False)
+        scan_opts_row.addWidget(self.filter_edit, 1)
 
         layout.addLayout(scan_opts_row)
 
@@ -759,12 +771,22 @@ class FolderTreeLoaderDialog(QDialog):
         sel_row.setSpacing(4)
 
         self.select_all_btn = QPushButton("Check All")
+        self.select_all_btn.setToolTip("Check all layers shown by the filter")
         self.select_all_btn.setEnabled(False)
         sel_row.addWidget(self.select_all_btn)
 
         self.select_none_btn = QPushButton("Uncheck All")
+        self.select_none_btn.setToolTip("Uncheck all layers shown by the filter")
         self.select_none_btn.setEnabled(False)
         sel_row.addWidget(self.select_none_btn)
+
+        self.toggle_btn = QPushButton("Toggle Selection")
+        self.toggle_btn.setToolTip(
+            "Check the highlighted layers, or uncheck them if all are checked.\n"
+            "Highlighted folders include their shown layers."
+        )
+        self.toggle_btn.setEnabled(False)
+        sel_row.addWidget(self.toggle_btn)
 
         sel_row.addStretch()
 
@@ -881,7 +903,10 @@ class FolderTreeLoaderDialog(QDialog):
 
         self.select_all_btn.clicked.connect(self._check_all)
         self.select_none_btn.clicked.connect(self._uncheck_all)
+        self.toggle_btn.clicked.connect(self._toggle_selected)
+        self.filter_edit.textChanged.connect(self._apply_filter)
         self.layer_tree.itemChanged.connect(self._on_tree_changed)
+        self.layer_tree.itemSelectionChanged.connect(self._update_toggle_enabled)
 
         self.vectors_check.stateChanged.connect(lambda _: self._rescan_if_loaded())
         self.rasters_check.stateChanged.connect(lambda _: self._rescan_if_loaded())
@@ -943,8 +968,7 @@ class FolderTreeLoaderDialog(QDialog):
             )
             self._summary_state = "empty"
             self._apply_theme()
-            self.select_all_btn.setEnabled(False)
-            self.select_none_btn.setEnabled(False)
+            self._set_tree_controls_enabled(False)
             self._log("⚠️ No GIS datasets found")
             self._update_count()
             self._validate()
@@ -974,11 +998,15 @@ class FolderTreeLoaderDialog(QDialog):
 
         # Build tree
         tree = build_folder_tree(self.item_list)
-        self._populate_tree(None, tree)
+        blocked = self.layer_tree.blockSignals(True)
+        try:
+            self._populate_tree(None, tree)
+        finally:
+            self.layer_tree.blockSignals(blocked)
         self.layer_tree.expandAll()
 
-        self.select_all_btn.setEnabled(True)
-        self.select_none_btn.setEnabled(True)
+        self._apply_filter(self.filter_edit.text())
+        self._set_tree_controls_enabled(True)
 
         self._log(f"✅ Found {len(self.item_list)} dataset(s)")
         if ext_counts:
@@ -1138,37 +1166,108 @@ class FolderTreeLoaderDialog(QDialog):
             _walk(self.layer_tree.topLevelItem(i))
         return checked
 
+    def _iter_layer_items(self, visible_only=False):
+        """Iterate layer rows; filtered ancestors hide their descendants too."""
+        def walk(item):
+            if visible_only and item.isHidden():
+                return
+            if item.data(0, Qt.ItemDataRole.UserRole) is not None:
+                yield item
+            for index in range(item.childCount()):
+                yield from walk(item.child(index))
+
+        for index in range(self.layer_tree.topLevelItemCount()):
+            yield from walk(self.layer_tree.topLevelItem(index))
+
+    def _selected_layer_items(self):
+        """Include shown descendants of highlighted folders, without repeats."""
+        items = []
+        seen = set()
+
+        def add(item):
+            if item.isHidden():
+                return
+            if item.data(0, Qt.ItemDataRole.UserRole) is not None:
+                if id(item) not in seen:
+                    seen.add(id(item))
+                    items.append(item)
+            for index in range(item.childCount()):
+                add(item.child(index))
+
+        for item in self.layer_tree.selectedItems():
+            add(item)
+        return items
+
+    def _set_check_states(self, state, items=None):
+        if items is None:
+            items = list(self._iter_layer_items(visible_only=True))
+        self._block_item_changed = True
+        try:
+            for item in items:
+                item.setCheckState(0, state)
+        finally:
+            self._block_item_changed = False
+        self._update_count()
+
     def _check_all(self):
-        for i in range(self.layer_tree.topLevelItemCount()):
-            item = self.layer_tree.topLevelItem(i)
-            if item:
-                item.setCheckState(0, Qt.CheckState.Checked)
+        self._set_check_states(Qt.CheckState.Checked)
 
     def _uncheck_all(self):
-        for i in range(self.layer_tree.topLevelItemCount()):
-            item = self.layer_tree.topLevelItem(i)
-            if item:
-                item.setCheckState(0, Qt.CheckState.Unchecked)
+        self._set_check_states(Qt.CheckState.Unchecked)
+
+    def _toggle_selected(self):
+        items = self._selected_layer_items()
+        if not items:
+            return
+        all_checked = all(item.checkState(0) == Qt.CheckState.Checked for item in items)
+        self._set_check_states(
+            Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked,
+            items,
+        )
+
+    def _update_toggle_enabled(self):
+        self.toggle_btn.setEnabled(bool(self._selected_layer_items()))
+
+    def _set_tree_controls_enabled(self, enabled):
+        self.select_all_btn.setEnabled(enabled)
+        self.select_none_btn.setEnabled(enabled)
+        self.filter_edit.setEnabled(enabled)
+        self._update_toggle_enabled()
+
+    def _apply_filter(self, text):
+        """A matching folder keeps its entire subtree; preserve check states."""
+        needle = text.strip().casefold()
+
+        def filter_item(item, parent_match):
+            match = parent_match or not needle or needle in item.text(0).casefold()
+            if item.childCount():
+                visible = False
+                for index in range(item.childCount()):
+                    if filter_item(item.child(index), match):
+                        visible = True
+            else:
+                visible = match
+            item.setHidden(not visible)
+            if needle and visible and item.childCount():
+                item.setExpanded(True)
+            return visible
+
+        for index in range(self.layer_tree.topLevelItemCount()):
+            filter_item(self.layer_tree.topLevelItem(index), False)
+        self._update_count()
+        self._update_toggle_enabled()
 
     def _on_tree_changed(self, item, col):
         # Only react to checkbox column changes
         if col != 0 or self._block_item_changed:
-            self._update_count()
-            self._validate()
             return
 
         # Propagate to all other selected *leaf* (layer) items
         if item.data(0, Qt.ItemDataRole.UserRole) is not None:
-            selected = self.layer_tree.selectedItems()
+            selected = self._selected_layer_items()
             if item in selected and len(selected) > 1:
-                new_state = item.checkState(0)
-                self._block_item_changed = True
-                try:
-                    for sel in selected:
-                        if sel is not item and sel.data(0, Qt.ItemDataRole.UserRole) is not None:
-                            sel.setCheckState(0, new_state)
-                finally:
-                    self._block_item_changed = False
+                self._set_check_states(item.checkState(0), selected)
+                return
 
         self._update_count()
         self._validate()
@@ -1177,7 +1276,11 @@ class FolderTreeLoaderDialog(QDialog):
         total = len(self.item_list)
         checked = len(self._get_checked_items())
         if total > 0:
-            self.count_label.setText(f"{checked} of {total} selected")
+            text = f"{checked} of {total} selected"
+            if self.filter_edit.text().strip():
+                shown = sum(1 for _ in self._iter_layer_items(visible_only=True))
+                text = f"{shown} shown  ·  {text}"
+            self.count_label.setText(text)
             if checked == 0:
                 self.count_label.setStyleSheet(f"color: {self._status_color('warning')};")
             elif checked == total:

@@ -117,6 +117,7 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
     dialog.show()
     app.processEvents()
     assert not dialog.load_btn.isEnabled()
+    assert not dialog.filter_edit.isEnabled() and not dialog.toggle_btn.isEnabled()
     assert dialog.layer_tree.header().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
     original_browse = QFileDialog.getExistingDirectory
     QFileDialog.getExistingDirectory = lambda *args: str(data_root)
@@ -145,6 +146,52 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
     assert len(dialog._get_checked_items()) == 1
     dialog.layer_tree.clearSelection()
     dialog._check_all()
+
+    # Search changes visibility, never the layer choices, and reveals matches
+    # inside collapsed folders. Check All / Uncheck All affect shown rows only.
+    dialog.layer_tree.collapseAll()
+    dialog.filter_edit.setText("  INSPECTION  ")
+    assert len(list(dialog._iter_layer_items(visible_only=True))) == 1
+    assert len(dialog._get_checked_items()) == 3
+    visible = list(dialog._iter_layer_items(visible_only=True))[0]
+    assert visible.parent().isExpanded()
+    dialog._uncheck_all()
+    assert len(dialog._get_checked_items()) == 2
+    dialog._check_all()
+    assert len(dialog._get_checked_items()) == 3
+    dialog.filter_edit.setText("no matching dataset")
+    assert not list(dialog._iter_layer_items(visible_only=True))
+    assert "0 shown" in dialog.count_label.text()
+    dialog._uncheck_all()
+    assert len(dialog._get_checked_items()) == 3
+    dialog.filter_edit.setText("SURVEY LAYERS")
+    assert len(list(dialog._iter_layer_items(visible_only=True))) == 2
+    folder = next(leaf.parent() for leaf in leaves if leaf.text(0) == "Terrain")
+    folder.setSelected(True)
+    assert dialog.toggle_btn.isEnabled()
+    # Highlighting both a parent and child must not apply the toggle twice.
+    folder.child(0).setSelected(True)
+    assert len(dialog._selected_layer_items()) == 2
+    dialog.toggle_btn.click()
+    assert len(dialog._get_checked_items()) == 1
+    dialog.toggle_btn.click()
+    assert len(dialog._get_checked_items()) == 3
+    dialog.layer_tree.clearSelection()
+    assert not dialog.toggle_btn.isEnabled()
+    survey_leaves = list(dialog._iter_layer_items(visible_only=True))
+    survey_leaves[0].setCheckState(0, Qt.CheckState.Unchecked)
+    for leaf in survey_leaves:
+        leaf.setSelected(True)
+    dialog.toggle_btn.click()
+    assert len(dialog._get_checked_items()) == 3, "Mixed selection should become checked"
+    # A rescan keeps the search text and reapplies it to the rebuilt tree.
+    dialog._scan_folder()
+    assert dialog.filter_edit.text() == "SURVEY LAYERS"
+    assert len(list(dialog._iter_layer_items(visible_only=True))) == 2
+    assert not dialog.toggle_btn.isEnabled()
+    dialog.filter_edit.clear()
+    assert len(list(dialog._iter_layer_items(visible_only=True))) == 3
+    assert len(dialog._get_checked_items()) == 3
     dialog.group_check.setChecked(False)
     assert not dialog.expand_check.isEnabled()
     dialog.group_check.setChecked(True)
@@ -153,6 +200,9 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
     for width in (1000, 1200, 1600):
         dialog.resize(width, 750)
         app.processEvents()
+        assert dialog.filter_edit.geometry().left() > dialog.probe_check.geometry().right()
+        assert abs(dialog.filter_edit.geometry().center().y() - dialog.probe_check.geometry().center().y()) <= 2
+        assert dialog.filter_edit.width() >= 120
         assert dialog.layer_tree.columnWidth(0) >= 180, [dialog.layer_tree.columnWidth(i) for i in range(5)]
         assert sum(dialog.layer_tree.columnWidth(i) for i in range(5)) <= dialog.layer_tree.viewport().width() + 2, (width, dialog.width(), dialog.layer_tree.viewport().width(), [dialog.layer_tree.columnWidth(i) for i in range(5)])
     dialog.resize(1200, 700)
@@ -167,6 +217,7 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
             (QPalette.ColorRole.Base, "#252525"),
             (QPalette.ColorRole.AlternateBase, "#353535"),
             (QPalette.ColorRole.Text, "#eeeeee"),
+            (QPalette.ColorRole.PlaceholderText, "#9aa0a6"),
             (QPalette.ColorRole.Button, "#404040"),
             (QPalette.ColorRole.ButtonText, "#eeeeee"),
             (QPalette.ColorRole.Highlight, "#2878b8"),
@@ -199,6 +250,7 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
     dialog.folder_edit.setText(str(empty))
     dialog._scan_folder()
     assert not dialog.item_list and not dialog.load_btn.isEnabled()
+    assert not dialog.filter_edit.isEnabled() and not dialog.toggle_btn.isEnabled()
     dialog.close()
 
     def close_fresh_dialog():
@@ -212,4 +264,4 @@ with tempfile.TemporaryDirectory(prefix="folder_tree_loader_test_") as temporary
     assert not iface.actions and plugin.action is None and plugin.toolbar is None
     iface.window.close()
 
-print("PASS: ZIP import, toolbar/menu lifecycle, fresh dialog, widths at 1000/1200/1600, horizontal options, scan/check/load of vector/raster/GDB, grouped/flat load and empty scan", flush=True)
+print("PASS: ZIP import, toolbar/menu lifecycle, fresh dialog, widths at 1000/1200/1600, inline filter, layer/folder search and rescan, filtered bulk checks, mixed/group selection toggle, vector/raster/GDB load, grouped/flat load and empty scan", flush=True)
