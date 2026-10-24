@@ -157,8 +157,11 @@ def _probe_vector(filepath: str) -> Dict:
 
         ds = None
 
-    except Exception:
-        pass
+    except Exception as exc:
+        QgsMessageLog.logMessage(
+            f"Could not read vector metadata for '{filepath}': {exc}",
+            LOG_TAG, Qgis.MessageLevel.Warning, notifyUser=False,
+        )
 
     return info
 
@@ -204,8 +207,11 @@ def _probe_raster(filepath: str) -> Dict:
 
         ds = None
 
-    except Exception:
-        pass
+    except Exception as exc:
+        QgsMessageLog.logMessage(
+            f"Could not read raster metadata for '{filepath}': {exc}",
+            LOG_TAG, Qgis.MessageLevel.Warning, notifyUser=False,
+        )
 
     return info
 
