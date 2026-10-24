@@ -1,0 +1,20 @@
+[general]
+name=Folder Tree Loader
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+description=Load GIS data from a folder, preserving its folder structure as QGIS layer-tree groups.
+about=Recursively scan folders for vector and raster datasets, including File Geodatabases. Select individual layers to load and recreate folder and Feature Dataset groups. Includes a compact, resizable layer table, horizontal load options, progress reporting and a log. Supports Qt5 and Qt6 and light and dark QGIS themes.
+version=1.0.0
+author=Irene Jaya
+email=irenejaya1@gmail.com
+tracker=https://github.com/irenejaya/folder-tree-loader/issues
+repository=https://github.com/irenejaya/folder-tree-loader
+homepage=https://github.com/irenejaya/folder-tree-loader
+category=Vector
+tags=folder,layer tree,loader,vector,raster,geodatabase,gdb
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=no
+server=False
+changelog=1.0.0 - Initial plugin release with menu and toolbar, compact metadata columns and horizontal load options.
