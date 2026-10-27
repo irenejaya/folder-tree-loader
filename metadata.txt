@@ -17,5 +17,5 @@ experimental=False
 deprecated=False
 hasProcessingProvider=no
 server=False
-changelog=1.1 - Sort folders, files, GDB layers and loaded layer-tree groups in Windows Explorer order (case-insensitive, numbers by value); dialog is now modeless so QGIS stays usable while it is open
+changelog=1.1 - Sort folders, files, GDB layers and loaded layer-tree groups in Windows Explorer order (case-insensitive, numbers by value); dialog is now modeless and scanning/loading run as cancellable background tasks, so QGIS stays usable
     1.0 - Initial release

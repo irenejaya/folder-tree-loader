@@ -67,6 +67,7 @@ class FolderTreeLoaderPlugin:
 
     def _discard_dialog(self):
         if self.dlg is not None:
+            self.dlg.cancel_task(detach=True)
             self.dlg.close()
             self.dlg.deleteLater()
             self.dlg = None
