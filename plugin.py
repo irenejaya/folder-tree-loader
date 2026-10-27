@@ -48,18 +48,21 @@ class FolderTreeLoaderPlugin:
     def run(self):
         from .folder_tree_loader_dialog import FolderTreeLoaderDialog
 
-        self._discard_dialog()
+        # Modeless: QGIS stays usable while the dialog is open. Reuse one
+        # instance so the toolbar button raises it instead of opening another.
         try:
-            self.dlg = FolderTreeLoaderDialog(self.iface.mainWindow())
-            self.dlg.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.svg"))))
-            self.dlg.exec()
+            if self.dlg is None:
+                self.dlg = FolderTreeLoaderDialog(self.iface.mainWindow())
+                self.dlg.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.svg"))))
+            self.dlg.show()
+            self.dlg.raise_()
+            self.dlg.activateWindow()
         except Exception as exc:
             import traceback
             self.iface.messageBar().pushCritical(
                 "Folder Tree Loader", f"Failed to launch: {exc}"
             )
             traceback.print_exc()
-        finally:
             self._discard_dialog()
 
     def _discard_dialog(self):
