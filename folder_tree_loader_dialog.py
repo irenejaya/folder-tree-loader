@@ -32,12 +32,12 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 
-from qgis.PyQt.QtCore import Qt, QEvent
+from qgis.PyQt.QtCore import Qt, QEvent, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit,
     QGroupBox, QCheckBox, QLineEdit, QTabWidget,
-    QWidget, QScrollArea, QFileDialog, QApplication, QMessageBox,
+    QWidget, QScrollArea, QFileDialog, QMessageBox,
     QHeaderView, QFrame, QTreeWidget, QTreeWidgetItem, QSizePolicy,
     QAbstractItemView,
 )
@@ -45,7 +45,7 @@ from qgis.PyQt.QtGui import QFont, QPalette
 
 from qgis.core import (
     QgsApplication, QgsProject, QgsVectorLayer, QgsRasterLayer,
-    QgsMessageLog, Qgis, QgsLayerTreeGroup,
+    QgsMessageLog, Qgis, QgsLayerTreeGroup, QgsTask,
 )
 from qgis.gui import QgsFilterLineEdit
 
@@ -406,9 +406,13 @@ def scan_folder(
     include_rasters: bool = True,
     include_vectors: bool = True,
     probe_metadata: bool = True,
+    feedback=None,
 ) -> List[Dict]:
     """
     Recursively scan a folder for GIS data files.
+
+    ``feedback`` is an optional QgsTask: its progress is updated and the
+    scan stops early once it is cancelled.
 
     Returns a list of dicts, each with:
         name         – display name (filename or GDB layer name)
@@ -433,29 +437,27 @@ def scan_folder(
     if include_rasters:
         allowed |= RASTER_EXTENSIONS
 
+    def cancelled() -> bool:
+        return feedback is not None and feedback.isCanceled()
+
     try:
+        # Pass 1: walk the folders (fast) and collect what to open.
+        # Each entry is ('gdb', full_path, rel) or ('file', full_path, rel).
+        candidates: List[Tuple[str, str, str]] = []
         for dirpath, dirnames, filenames in os.walk(folder_path):
+            if cancelled():
+                return results
             # Detect .gdb directories at this level
             gdb_dirs = sorted(
                 (d for d in dirnames if d.lower().endswith('.gdb')),
                 key=natural_sort_key,
             )
-            for gdb_name in gdb_dirs:
-                if not include_vectors:
-                    continue
-                gdb_full = os.path.join(dirpath, gdb_name)
-                gdb_rel = os.path.relpath(gdb_full, root_norm)
-                gdb_parts = Path(gdb_rel).parts
-
-                gdb_layers = _enumerate_gdb_layers(gdb_full)
-                for gl in gdb_layers:
-                    # Build rel_parts: parent dirs + .gdb name + dataset + layer
-                    parts = list(gdb_parts)
-                    if gl.get("gdb_dataset"):
-                        parts.append(gl["gdb_dataset"])
-                    parts.append(gl["name"])
-                    gl["rel_parts"] = tuple(parts)
-                    results.append(gl)
+            if include_vectors:
+                for gdb_name in gdb_dirs:
+                    gdb_full = os.path.join(dirpath, gdb_name)
+                    candidates.append(
+                        ("gdb", gdb_full, os.path.relpath(gdb_full, root_norm))
+                    )
 
             # Don't recurse into .gdb internals
             dirnames[:] = sorted(
@@ -464,64 +466,84 @@ def scan_folder(
             )
 
             for fname in sorted(filenames, key=natural_sort_key):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in allowed:
+                if os.path.splitext(fname)[1].lower() not in allowed:
                     continue
-
                 full_path = os.path.join(dirpath, fname)
-                rel = os.path.relpath(full_path, root_norm)
-                rel_parts = Path(rel).parts
+                candidates.append(
+                    ("file", full_path, os.path.relpath(full_path, root_norm))
+                )
 
-                is_raster = ext in RASTER_EXTENSIONS
-                is_vector = ext in VECTOR_EXTENSIONS
+        # Pass 2: open each candidate (slow when probing metadata).
+        total = len(candidates)
+        for index, (kind, full_path, rel) in enumerate(candidates):
+            if cancelled():
+                return results
+            if feedback is not None:
+                feedback.setProgress(index * 100.0 / total)
 
-                if is_raster and include_rasters:
-                    if probe_metadata:
-                        info = _probe_raster(full_path)
-                    else:
-                        info = {
-                            "geom_type": "Raster",
-                            "geom_base": "raster",
-                            "crs": "",
-                            "feat_count": -1,
-                        }
-                    results.append({
-                        "name": os.path.splitext(fname)[0],
-                        "path": full_path,
-                        "ext": ext,
-                        "kind": "raster",
-                        "geom_type": info["geom_type"],
-                        "geom_base": info["geom_base"],
-                        "crs": info["crs"],
-                        "feat_count": info["feat_count"],
-                        "is_gdb_layer": False,
-                        "gdb_dataset": None,
-                        "rel_parts": rel_parts,
-                    })
+            if kind == "gdb":
+                gdb_parts = Path(rel).parts
+                for gl in _enumerate_gdb_layers(full_path):
+                    # Build rel_parts: parent dirs + .gdb name + dataset + layer
+                    parts = list(gdb_parts)
+                    if gl.get("gdb_dataset"):
+                        parts.append(gl["gdb_dataset"])
+                    parts.append(gl["name"])
+                    gl["rel_parts"] = tuple(parts)
+                    results.append(gl)
+                continue
 
-                elif is_vector and include_vectors:
-                    if probe_metadata:
-                        info = _probe_vector(full_path)
-                    else:
-                        info = {
-                            "geom_type": "",
-                            "geom_base": "unknown",
-                            "crs": "",
-                            "feat_count": -1,
-                        }
-                    results.append({
-                        "name": os.path.splitext(fname)[0],
-                        "path": full_path,
-                        "ext": ext,
-                        "kind": "vector",
-                        "geom_type": info["geom_type"],
-                        "geom_base": info["geom_base"],
-                        "crs": info["crs"],
-                        "feat_count": info["feat_count"],
-                        "is_gdb_layer": False,
-                        "gdb_dataset": None,
-                        "rel_parts": rel_parts,
-                    })
+            fname = os.path.basename(full_path)
+            ext = os.path.splitext(fname)[1].lower()
+            rel_parts = Path(rel).parts
+
+            if ext in RASTER_EXTENSIONS and include_rasters:
+                if probe_metadata:
+                    info = _probe_raster(full_path)
+                else:
+                    info = {
+                        "geom_type": "Raster",
+                        "geom_base": "raster",
+                        "crs": "",
+                        "feat_count": -1,
+                    }
+                results.append({
+                    "name": os.path.splitext(fname)[0],
+                    "path": full_path,
+                    "ext": ext,
+                    "kind": "raster",
+                    "geom_type": info["geom_type"],
+                    "geom_base": info["geom_base"],
+                    "crs": info["crs"],
+                    "feat_count": info["feat_count"],
+                    "is_gdb_layer": False,
+                    "gdb_dataset": None,
+                    "rel_parts": rel_parts,
+                })
+
+            elif ext in VECTOR_EXTENSIONS and include_vectors:
+                if probe_metadata:
+                    info = _probe_vector(full_path)
+                else:
+                    info = {
+                        "geom_type": "",
+                        "geom_base": "unknown",
+                        "crs": "",
+                        "feat_count": -1,
+                    }
+                results.append({
+                    "name": os.path.splitext(fname)[0],
+                    "path": full_path,
+                    "ext": ext,
+                    "kind": "vector",
+                    "geom_type": info["geom_type"],
+                    "geom_base": info["geom_base"],
+                    "crs": info["crs"],
+                    "feat_count": info["feat_count"],
+                    "is_gdb_layer": False,
+                    "gdb_dataset": None,
+                    "rel_parts": rel_parts,
+                })
 
     except Exception as e:
         QgsMessageLog.logMessage(
@@ -556,6 +578,119 @@ def build_folder_tree(items: List[Dict]) -> Dict:
 
 
 # ============================================================================
+# BACKGROUND TASKS
+# ============================================================================
+
+# PyQGIS tasks must stay referenced from Python until they finish, or the
+# Python half is garbage collected while QGIS still runs the task.
+_RUNNING_TASKS = set()
+
+
+class _DialogTask(QgsTask):
+    """QgsTask that reports back to the dialog.
+
+    run() executes in a worker thread and must not touch widgets; it
+    reports through signals, which Qt queues to the main thread.
+    finished() always runs in the main thread.
+    """
+
+    logged = pyqtSignal(str)
+    status = pyqtSignal(str)
+
+    def __init__(self, description: str):
+        super().__init__(description)
+        self.done_callback = None
+
+    def finished(self, result):
+        _RUNNING_TASKS.discard(self)
+        if self.done_callback is not None:
+            self.done_callback(self, result)
+
+
+class _ScanTask(_DialogTask):
+    def __init__(self, folder: str, include_rasters: bool,
+                 include_vectors: bool, probe_metadata: bool):
+        super().__init__(f"Scanning {os.path.basename(folder)}")
+        self.folder = folder
+        self.include_rasters = include_rasters
+        self.include_vectors = include_vectors
+        self.probe_metadata = probe_metadata
+        self.results: List[Dict] = []
+
+    def run(self):
+        self.results = scan_folder(
+            self.folder,
+            include_rasters=self.include_rasters,
+            include_vectors=self.include_vectors,
+            probe_metadata=self.probe_metadata,
+            feedback=self,
+        )
+        return not self.isCanceled()
+
+
+class _LoadTask(_DialogTask):
+    """Open layers in the background; the dialog adds them to the project."""
+
+    def __init__(self, items: List[Dict], root_name: str,
+                 use_groups: bool, expand: bool):
+        super().__init__(f"Loading {len(items)} dataset(s) from {root_name}")
+        self.items = items
+        self.root_name = root_name
+        self.use_groups = use_groups
+        self.expand = expand
+        self.layers: List[Tuple[Dict, object]] = []
+        self.failed = 0
+
+    def run(self):
+        main_thread = QgsApplication.instance().thread()
+        total = len(self.items)
+
+        for idx, item in enumerate(self.items):
+            if self.isCanceled():
+                return False
+            name = item["name"]
+            path = item["path"]
+            kind = item["kind"]
+            ext = item.get("ext", "")
+            geom_type = item.get("geom_type", "")
+
+            self.setProgress(idx * 100.0 / total)
+            self.status.emit(name)
+            self.logged.emit(f"   📄 Loading: {name}  [{ext}]  ({geom_type})")
+
+            layer = None
+            if kind == "raster":
+                layer = QgsRasterLayer(path, name, "gdal")
+            elif kind == "vector":
+                layer = QgsVectorLayer(path, name, "ogr")
+
+            if layer is None or not layer.isValid():
+                self.logged.emit(f"      ❌ Failed to load '{name}'")
+                self.failed += 1
+                continue
+
+            crs = layer.crs().authid()
+            if kind == "raster":
+                self.logged.emit(
+                    f"      ✅ Loaded raster "
+                    f"({layer.width()}×{layer.height()}, "
+                    f"{layer.bandCount()} bands, CRS: {crs})"
+                )
+            else:
+                self.logged.emit(
+                    f"      ✅ Loaded "
+                    f"({layer.featureCount():,} features, CRS: {crs})"
+                )
+
+            # Layers must belong to the main thread before joining the project
+            layer.moveToThread(main_thread)
+            self.layers.append((item, layer))
+
+        self.setProgress(100)
+        return True
+
+
+# ============================================================================
 # MAIN DIALOG CLASS
 # ============================================================================
 
@@ -577,6 +712,9 @@ class FolderTreeLoaderDialog(QDialog):
         self.item_list: List[Dict] = []
         self._block_item_changed: bool = False  # guard against recursive itemChanged
         self._summary_state = "idle"
+        self._task: Optional[_DialogTask] = None
+        self._busy_button: Optional[QPushButton] = None
+        self._busy_text = ""
 
         self._build_ui()
         self._wire_signals()
@@ -987,19 +1125,44 @@ class FolderTreeLoaderDialog(QDialog):
             self._scan_folder()
 
     def _scan_folder(self):
+        if self._task is not None:
+            self.cancel_task()
+            return
         if not self.scan_root:
             return
 
         self._log(f"🔍 Scanning folder: {self.scan_root}")
 
-        self.item_list = scan_folder(
+        self.item_list = []
+        self.layer_tree.clear()
+        self.summary_label.setText(
+            f"Scanning {os.path.basename(self.scan_root)}…"
+        )
+        self._summary_state = "idle"
+        self._apply_theme()
+
+        task = _ScanTask(
             self.scan_root,
             include_rasters=self.rasters_check.isChecked(),
             include_vectors=self.vectors_check.isChecked(),
             probe_metadata=self.probe_check.isChecked(),
         )
+        self.progress_bar.setFormat("Scanning…  %p%")
+        self._start_task(task, self.scan_btn, self._scan_finished)
 
-        self.layer_tree.clear()
+    def _scan_finished(self, task: _ScanTask, ok: bool):
+        if task is not self._task:
+            return
+        self._end_task()
+
+        if not ok:
+            self.summary_label.setText("Scan cancelled. Click Scan to try again.")
+            self._log("⏹ Scan cancelled")
+            self._set_tree_controls_enabled(False)
+            self._update_count()
+            return
+
+        self.item_list = task.results
         self._resize_columns()
 
         if not self.item_list:
@@ -1338,6 +1501,8 @@ class FolderTreeLoaderDialog(QDialog):
     # VALIDATION
     # ==================================================================
     def _validate(self):
+        if self._task is not None:
+            return
         ok = (
             self.scan_root is not None
             and os.path.isdir(self.scan_root or "")
@@ -1349,6 +1514,9 @@ class FolderTreeLoaderDialog(QDialog):
     # LOADING
     # ==================================================================
     def _run_load(self):
+        if self._task is not None:
+            self.cancel_task()
+            return
         selected = self._get_checked_items()
         if not selected:
             QMessageBox.warning(
@@ -1357,107 +1525,72 @@ class FolderTreeLoaderDialog(QDialog):
             return
 
         self.tab_widget.setCurrentIndex(1)
-        self.load_btn.setEnabled(False)
-        self.load_btn.setText("Loading…")
-        self.progress_bar.setValue(0)
-        QApplication.processEvents()
 
         root_name = os.path.basename(self.scan_root)
-        use_groups = self.group_check.isChecked()
-        expand = self.expand_check.isChecked()
 
         self._log(f"\n{'=' * 60}")
         self._log(f"🚀 Loading {len(selected)} dataset(s) from {root_name}")
         self._log(f"{'=' * 60}\n")
 
+        task = _LoadTask(
+            selected, root_name,
+            use_groups=self.group_check.isChecked(),
+            expand=self.expand_check.isChecked(),
+        )
+        self._start_task(task, self.load_btn, self._load_finished)
+
+    def _load_finished(self, task: _LoadTask, ok: bool):
+        """Add the opened layers to the project (main thread, fast)."""
+        if task is not self._task:
+            return
+        self._end_task()
+
+        if not ok:
+            self._log("⏹ Loading cancelled — no layers were added")
+            return
+
         project_root = QgsProject.instance().layerTreeRoot()
 
         # Top-level group
         top_group: QgsLayerTreeGroup = (
-            project_root.insertGroup(0, root_name)
-            if use_groups else project_root
+            project_root.insertGroup(0, task.root_name)
+            if task.use_groups else project_root
         )
 
         # Cache of groups keyed by relative folder path tuple
         group_cache: Dict[Tuple, QgsLayerTreeGroup] = {}
 
-        loaded = 0
-        failed = 0
-        total = len(selected)
-
-        for idx, item in enumerate(selected):
-            name = item["name"]
-            path = item["path"]
-            kind = item["kind"]
-            ext = item.get("ext", "")
-            geom_type = item.get("geom_type", "")
-
-            pct = int((idx / total) * 100)
-            self.progress_bar.setValue(pct)
-            self.progress_bar.setFormat(f"{pct}%  –  {name}")
-            QApplication.processEvents()
-
-            self._log(f"   📄 Loading: {name}  [{ext}]  ({geom_type})")
-
+        for item, layer in task.layers:
             # Determine target group from rel_parts
             rel_parts = item.get("rel_parts", ())
             folder_parts = rel_parts[:-1] if rel_parts else ()
 
-            if use_groups and folder_parts:
+            if task.use_groups and folder_parts:
                 target = self._ensure_group(
                     top_group, folder_parts, group_cache
                 )
             else:
                 target = top_group
 
-            # Load layer
-            layer = None
-            if kind == "raster":
-                layer = QgsRasterLayer(path, name, "gdal")
-            elif kind == "vector":
-                layer = QgsVectorLayer(path, name, "ogr")
-
-            if layer is None or not layer.isValid():
-                self._log(f"      ❌ Failed to load '{name}'")
-                failed += 1
-                continue
-
             QgsProject.instance().addMapLayer(layer, False)
             target.addLayer(layer)
-            loaded += 1
-
-            # Log details
-            if kind == "raster":
-                crs = layer.crs().authid()
-                self._log(
-                    f"      ✅ Loaded raster "
-                    f"({layer.width()}×{layer.height()}, "
-                    f"{layer.bandCount()} bands, CRS: {crs})"
-                )
-            else:
-                crs = layer.crs().authid()
-                self._log(
-                    f"      ✅ Loaded "
-                    f"({layer.featureCount():,} features, CRS: {crs})"
-                )
 
         # Expand / collapse
-        if use_groups:
-            top_group.setExpanded(expand)
-            if expand:
+        if task.use_groups:
+            top_group.setExpanded(task.expand)
+            if task.expand:
                 for g in group_cache.values():
                     g.setExpanded(True)
 
-        self.progress_bar.setValue(100)
-        self.progress_bar.setFormat("100%")
+        loaded = len(task.layers)
+        failed = task.failed
+        total = len(task.items)
+        root_name = task.root_name
 
         self._log(f"\n{'=' * 60}")
         self._log(f"✅ LOADING COMPLETE")
         self._log(f"   Loaded: {loaded}   Failed: {failed}   Total: {total}")
         self._log(f"{'=' * 60}")
-
-        self.load_btn.setEnabled(True)
-        self.load_btn.setText("Load")
 
         if failed:
             QMessageBox.warning(
@@ -1471,7 +1604,77 @@ class FolderTreeLoaderDialog(QDialog):
                 f"Successfully loaded {loaded} dataset(s) from\n{root_name}",
             )
 
+    # ------------------------------------------------------------------
+    def _start_task(self, task: _DialogTask, button: QPushButton, on_done):
+        """Run a task in the background; ``button`` becomes its Cancel button."""
+        self._task = task
+        task.done_callback = on_done
+        task.logged.connect(self._log)
+        task.status.connect(
+            lambda text: self.progress_bar.setFormat(f"%p%  –  {text}")
+        )
+        task.progressChanged.connect(
+            lambda value: self.progress_bar.setValue(int(value))
+        )
+        self._set_busy(True, button)
+        _RUNNING_TASKS.add(task)
+        QgsApplication.taskManager().addTask(task)
+
+    def _end_task(self):
+        self._task = None
+        self._set_busy(False)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+
+    def cancel_task(self, detach: bool = False):
+        """Cancel the running scan or load, if any.
+
+        ``detach`` also stops the task reporting back, for when the dialog
+        is about to be deleted (plugin unload).
+        """
+        task = self._task
+        if task is None:
+            return
+        if detach:
+            task.done_callback = None
+            for signal in (task.logged, task.status, task.progressChanged):
+                try:
+                    signal.disconnect()
+                except TypeError:
+                    pass
+            self._task = None
+        else:
+            self._log("⏹ Cancelling…")
+        task.cancel()
+
+    def _set_busy(self, busy: bool, button: Optional[QPushButton] = None):
+        """Lock the inputs while a task runs, leaving its Cancel button live."""
+        inputs = [
+            self.folder_edit, self.browse_btn, self.scan_btn,
+            self.vectors_check, self.rasters_check, self.probe_check,
+            self.layer_tree, self.load_btn, self.group_check, self.expand_check,
+        ]
+        if busy:
+            for widget in inputs:
+                widget.setEnabled(widget is button)
+            self._set_tree_controls_enabled(False)
+            self.toggle_btn.setEnabled(False)
+            self._busy_button, self._busy_text = button, button.text()
+            button.setText("Cancel")
+            self.progress_bar.setValue(0)
+            return
+
+        if self._busy_button is not None:
+            self._busy_button.setText(self._busy_text)
+            self._busy_button = None
+        for widget in (self.folder_edit, self.browse_btn, self.vectors_check,
+                       self.rasters_check, self.probe_check, self.layer_tree,
+                       self.group_check):
+            widget.setEnabled(True)
+        self.expand_check.setEnabled(self.group_check.isChecked())
+        self.scan_btn.setEnabled(bool(self.folder_edit.text().strip()))
+        self._set_tree_controls_enabled(bool(self.item_list))
+        self._validate()
 
     # ------------------------------------------------------------------
     @staticmethod
