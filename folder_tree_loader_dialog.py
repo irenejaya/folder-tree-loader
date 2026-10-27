@@ -27,6 +27,7 @@ Author: Irene Jaya
 """
 
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
@@ -76,6 +77,33 @@ ALL_GIS_EXTENSIONS = VECTOR_EXTENSIONS | RASTER_EXTENSIONS
 def format_timestamp() -> str:
     """Return formatted timestamp for logging."""
     return datetime.now().strftime("%H:%M:%S")
+
+
+_DIGITS_RE = re.compile(r"[0-9]+")
+
+
+def natural_sort_key(text: str) -> Tuple:
+    """Sort key matching Windows Explorer's name order.
+
+    Case-insensitive; runs of digits compare by numeric value
+    (1PCT < 2PCT < 10PCT); punctuation sorts before digits, and digits
+    before letters. The original text breaks ties so the order is stable.
+    """
+    tokens = []
+    pos = 0
+    for m in _DIGITS_RE.finditer(text):
+        for ch in text[pos:m.start()]:
+            tokens.append((2, ch.casefold()) if ch.isalpha() else (0, ord(ch)))
+        tokens.append((1, int(m.group()), len(m.group())))
+        pos = m.end()
+    for ch in text[pos:]:
+        tokens.append((2, ch.casefold()) if ch.isalpha() else (0, ord(ch)))
+    return tuple(tokens), text
+
+
+def _item_sort_key(item: Dict) -> Tuple:
+    """Order datasets by display name (extension ignored, used as tie-break)."""
+    return natural_sort_key(item["name"]), natural_sort_key(item.get("ext", ""))
 
 
 def _probe_vector(filepath: str) -> Dict:
@@ -402,7 +430,10 @@ def scan_folder(
     try:
         for dirpath, dirnames, filenames in os.walk(folder_path):
             # Detect .gdb directories at this level
-            gdb_dirs = [d for d in dirnames if d.lower().endswith('.gdb')]
+            gdb_dirs = sorted(
+                (d for d in dirnames if d.lower().endswith('.gdb')),
+                key=natural_sort_key,
+            )
             for gdb_name in gdb_dirs:
                 if not include_vectors:
                     continue
@@ -421,10 +452,12 @@ def scan_folder(
                     results.append(gl)
 
             # Don't recurse into .gdb internals
-            dirnames[:] = [d for d in dirnames
-                           if not d.lower().endswith('.gdb')]
+            dirnames[:] = sorted(
+                (d for d in dirnames if not d.lower().endswith('.gdb')),
+                key=natural_sort_key,
+            )
 
-            for fname in sorted(filenames):
+            for fname in sorted(filenames, key=natural_sort_key):
                 ext = os.path.splitext(fname)[1].lower()
                 if ext not in allowed:
                     continue
@@ -1024,9 +1057,11 @@ class FolderTreeLoaderDialog(QDialog):
     # TREE HELPERS
     # ==================================================================
     def _populate_tree(self, parent, tree_dict: Dict):
-        for key, subtree in sorted(tree_dict.items()):
-            if key == "_items":
-                continue
+        folder_keys = sorted(
+            (k for k in tree_dict if k != "_items"), key=natural_sort_key
+        )
+        for key in folder_keys:
+            subtree = tree_dict[key]
             folder_item = self._make_folder_item(key)
             if parent is None:
                 self.layer_tree.addTopLevelItem(folder_item)
@@ -1034,7 +1069,8 @@ class FolderTreeLoaderDialog(QDialog):
                 parent.addChild(folder_item)
             self._populate_tree(folder_item, subtree)
 
-        for item_dict in tree_dict.get("_items", []):
+        for item_dict in sorted(tree_dict.get("_items", []),
+                                key=_item_sort_key):
             leaf = self._make_layer_item(item_dict)
             if parent is None:
                 self.layer_tree.addTopLevelItem(leaf)
